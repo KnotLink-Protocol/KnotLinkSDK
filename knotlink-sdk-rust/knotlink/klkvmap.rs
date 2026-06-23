@@ -1,3 +1,7 @@
+// KnotLink SDK - Rust
+// Copyright (c) 2024-2026 KnotLink Contributors
+// SPDX-License-Identifier: MIT
+
 use std::collections::HashMap;
 
 pub type KLKVMap = HashMap<String, String>;

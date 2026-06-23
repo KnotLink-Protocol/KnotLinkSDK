@@ -1,3 +1,7 @@
+// KnotLink SDK - Rust
+// Copyright (c) 2024-2026 KnotLink Contributors
+// SPDX-License-Identifier: MIT
+
 mod klkvmap;
 mod tcp_client;
 mod open_socket_querier;
