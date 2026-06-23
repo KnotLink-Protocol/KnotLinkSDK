@@ -1,3 +1,9 @@
+/*
+ * KnotLink SDK - C++
+ * Copyright (c) 2024-2026 KnotLink Contributors
+ * SPDX-License-Identifier: MIT
+ */
+
 #include "opensocketresponser.h"
 
 OpenSocketResponser::OpenSocketResponser(QString APPID, QString OpenSocketID, QObject *parent)

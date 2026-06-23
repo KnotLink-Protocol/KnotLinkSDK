@@ -1,3 +1,9 @@
+/*
+ * KnotLink SDK - JavaScript
+ * Copyright (c) 2024-2026 KnotLink Contributors
+ * SPDX-License-Identifier: MIT
+ */
+
 // SignalSubscriber.js
 const TcpClient = require('./TcpClient'); // 确保 TcpClient.js 在同一目录下
 

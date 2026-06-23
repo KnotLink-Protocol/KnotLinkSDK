@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='knotlink_pyqt',  # 包名
-    version='1.0.0',  # 版本号
+    version='2.0.0',  # 版本号
     packages=find_packages(),  # 自动发现包和模块
     description='A PyQt-based client for KnotLink communication',  # 简短描述
     long_description=open('README.md', encoding='utf-8').read(),  # 从 README.md 读取长描述

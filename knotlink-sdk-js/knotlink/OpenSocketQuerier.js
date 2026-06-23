@@ -1,3 +1,9 @@
+/*
+ * KnotLink SDK - JavaScript
+ * Copyright (c) 2024-2026 KnotLink Contributors
+ * SPDX-License-Identifier: MIT
+ */
+
 // OpenSocketQuerier.js
 const TcpClient = require('./TcpClient');
 

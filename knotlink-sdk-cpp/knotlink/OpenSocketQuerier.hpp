@@ -1,3 +1,9 @@
+/*
+ * KnotLink SDK - C++
+ * Copyright (c) 2024-2026 KnotLink Contributors
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef OPEN_SOCKET_QUERIER_HPP
 #define OPEN_SOCKET_QUERIER_HPP
 
