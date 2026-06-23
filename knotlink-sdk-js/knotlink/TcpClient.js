@@ -55,7 +55,7 @@ class TcpClient {
         this.tcpSocket.write(Buffer.concat([lengthBuf, data]));
     }
 
-    sendData(data) {
+    send_data(data) {
         this._writeWithLengthPrefix(data);
     }
 

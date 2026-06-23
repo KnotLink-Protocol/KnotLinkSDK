@@ -77,7 +77,7 @@ if __name__ == "__main__":
     def my_callback(data: str):
         print(f"Callback received data: {data}")
 
-    querier = OpenSocketQuerier(APPID="0x00000001", OpenSocketID="0x00000002")
+    querier = OpenSocketQuerier(APPID="0x00000001", OpenSocketID="0x00000011")
     querier.set_RecvFunc(my_callback)  # 设置回调函数
 
     # 同步查询示例
