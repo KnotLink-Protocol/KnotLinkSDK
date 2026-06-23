@@ -39,7 +39,7 @@ knotlink-sdk-<lang>/
 
 ## 下载 SDK
 
-SDK均存储在开源仓库https://github.com/KnotLink-Protocol/KnotLinkSDK，可下载zip或pull。
+SDK均存储在开源仓库[KnotLink-Protocol/KnotLinkSDK: SDK for KnotLink](https://github.com/KnotLink-Protocol/KnotLinkSDK)，可下载zip或pull。
 
 ## 安装库
 
