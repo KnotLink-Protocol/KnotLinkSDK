@@ -23,12 +23,15 @@ namespace KnotLink
         private TcpClient? _client;
         private NetworkStream? _stream;
         private readonly CancellationTokenSource _cts = new();
+        private readonly SemaphoreSlim _sendLock = new(1, 1);
         private Task? _readTask;
         private Task? _heartbeatTask;
         private readonly byte[] _lenBuffer = new byte[4];
         private readonly MemoryStream _recvBuffer = new();
+        private int _disposed;
 
         public Func<string, Task>? OnDataReceivedAsync { get; set; }
+        public Func<Exception, Task>? OnErrorAsync { get; set; }
         public bool Running => _client?.Connected == true && !_cts.IsCancellationRequested;
 
         public KlTcpClient(TimeSpan? heartbeatInterval = null)
@@ -36,9 +39,12 @@ namespace KnotLink
             _heartbeatInterval = heartbeatInterval ?? TimeSpan.FromMinutes(3);
         }
 
-        // ---------- Á¬½Ó ----------
+        // ---------- è¿æ¥ ----------
         public async Task<bool> ConnectAsync(string host, int port)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KlTcpClient));
+
             _client = new TcpClient();
             await _client.ConnectAsync(host, port).ConfigureAwait(false);
             _stream = _client.GetStream();
@@ -48,25 +54,38 @@ namespace KnotLink
             return true;
         }
 
-        // ---------- ·¢ËÍ£¨¼Ó³¤¶ÈÇ°×º£© ----------
+        // ---------- å‘é€ï¼ˆåŠ é•¿åº¦å‰ç¼€ï¼‰ ----------
         public async Task SendAsync(string data, CancellationToken cancellationToken = default)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KlTcpClient));
             if (_stream == null) throw new InvalidOperationException("Not connected.");
 
             byte[] payload = Encoding.UTF8.GetBytes(data);
             if (payload.Length > MaxMessageSize)
                 throw new ArgumentException($"Message too large: {payload.Length} > {MaxMessageSize}");
 
-            // 4 ×Ö½Ú´ó¶Ë³¤¶ÈÍ·
+            // 4 å­—èŠ‚å¤§ç«¯é•¿åº¦å¤´
             byte[] lenBytes = BitConverter.GetBytes(payload.Length);
             if (BitConverter.IsLittleEndian) Array.Reverse(lenBytes);
 
-            await _stream.WriteAsync(lenBytes, 0, 4, cancellationToken).ConfigureAwait(false);
-            await _stream.WriteAsync(payload, 0, payload.Length, cancellationToken).ConfigureAwait(false);
-            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (Volatile.Read(ref _disposed) != 0)
+                    throw new ObjectDisposedException(nameof(KlTcpClient));
+
+                await _stream.WriteAsync(lenBytes, 0, 4, cancellationToken).ConfigureAwait(false);
+                await _stream.WriteAsync(payload, 0, payload.Length, cancellationToken).ConfigureAwait(false);
+                await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
         }
 
-        // ---------- ½ÓÊÕÑ­»·£¨»º³å + ½âÎö³¤¶ÈÇ°×º£© ----------
+        // ---------- æ¥æ”¶å¾ªç¯ï¼ˆç¼“å†² + è§£æé•¿åº¦å‰ç¼€ï¼‰ ----------
         private async Task ReadLoopAsync(CancellationToken cancellationToken)
         {
             if (_stream == null) return;
@@ -77,45 +96,77 @@ namespace KnotLink
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     int bytesRead = await _stream.ReadAsync(chunk, 0, chunk.Length, cancellationToken).ConfigureAwait(false);
-                    if (bytesRead == 0) break; // ¶Ô¶Ë¹Ø±Õ
+                    if (bytesRead == 0) break; // å¯¹ç«¯å…³é—­
 
                     lock (_recvBuffer)
                     {
                         _recvBuffer.Write(chunk, 0, bytesRead);
                     }
 
-                    // ¾¡¿ÉÄÜ¶àµØ½âÎö³öÍêÕûÏûÏ¢
+                    // å°½å¯èƒ½å¤šåœ°è§£æå‡ºå®Œæ•´æ¶ˆæ¯
                     while (TryExtractMessage(out byte[]? msgBytes))
                     {
                         if (msgBytes == null) break;
                         string text = Encoding.UTF8.GetString(msgBytes);
                         if (text == HeartbeatResponse)
-                            continue; // ºöÂÔĞÄÌø»Ø¸´
+                            continue; // å¿½ç•¥å¿ƒè·³å›å¤
 
                         if (OnDataReceivedAsync != null)
-                            await OnDataReceivedAsync(text).ConfigureAwait(false);
+                        {
+                            try
+                            {
+                                await OnDataReceivedAsync(text).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                // ç”¨æˆ·å›è°ƒå¼‚å¸¸ä¸åº”ç»ˆæ­¢åº•å±‚æ¥æ”¶å¾ªç¯ï¼Œä½†éœ€è¦å¯¹è°ƒç”¨æ–¹å¯è§ã€‚
+                                await ReportErrorAsync(ex).ConfigureAwait(false);
+                            }
+                        }
                     }
                 }
             }
-            catch (OperationCanceledException) { /* Õı³£ÍË³ö */ }
-            catch (Exception) { /* ÍøÂç´íÎó£¬¾²Ä¬ÍË³ö */ }
+            catch (OperationCanceledException) { /* æ­£å¸¸é€€å‡º */ }
+            catch (Exception ex) when (Volatile.Read(ref _disposed) == 0)
+            {
+                await ReportErrorAsync(ex).ConfigureAwait(false);
+            }
+            catch (Exception) { /* é‡Šæ”¾æ—¶å…³é—­ socket å¯èƒ½è§¦å‘å¼‚å¸¸ï¼Œé™é»˜é€€å‡º */ }
             finally
             {
-                // Á¬½Ó¶Ï¿ª£¬È¡ÏûËùÓĞÈÎÎñ
+                // è¿æ¥æ–­å¼€ï¼Œå–æ¶ˆæ‰€æœ‰ä»»åŠ¡
                 _cts.Cancel();
             }
         }
 
-        // ---------- ´Ó»º³åÇøÌáÈ¡Ò»ÌõÍêÕûÏûÏ¢ ----------
+        private async Task ReportErrorAsync(Exception ex)
+        {
+            if (OnErrorAsync != null)
+            {
+                try
+                {
+                    await OnErrorAsync(ex).ConfigureAwait(false);
+                    return;
+                }
+                catch
+                {
+                    // é”™è¯¯å¤„ç†å™¨è‡ªèº«å¤±è´¥æ—¶é€€å›åˆ°æ ‡å‡†é”™è¯¯è¾“å‡ºã€‚
+                }
+            }
+
+            Console.Error.WriteLine(ex.Message);
+        }
+
+        // ---------- ä»ç¼“å†²åŒºæå–ä¸€æ¡å®Œæ•´æ¶ˆæ¯ ----------
         private bool TryExtractMessage(out byte[]? message)
         {
             message = null;
             lock (_recvBuffer)
             {
                 long bufferLen = _recvBuffer.Length;
-                if (bufferLen < 4) return false; // Á¬³¤¶ÈÍ·¶¼²»¹»
+                if (bufferLen < 4) return false; // è¿é•¿åº¦å¤´éƒ½ä¸å¤Ÿ
 
-                // ¶ÁÈ¡³¤¶ÈÍ·£¨´ó¶Ë£©
+                // è¯»å–é•¿åº¦å¤´ï¼ˆå¤§ç«¯ï¼‰
                 _recvBuffer.Position = 0;
                 _recvBuffer.Read(_lenBuffer, 0, 4);
                 int msgLen = BitConverter.ToInt32(_lenBuffer, 0);
@@ -123,20 +174,20 @@ namespace KnotLink
 
                 if (msgLen <= 0 || msgLen > MaxMessageSize)
                 {
-                    // ÎŞĞ§³¤¶È£¬Çå¿Õ»º³åÇø²¢¶Ï¿ª
+                    // æ— æ•ˆé•¿åº¦ï¼Œæ¸…ç©ºç¼“å†²åŒºå¹¶æ–­å¼€
                     _recvBuffer.SetLength(0);
                     _recvBuffer.Position = 0;
                     throw new InvalidDataException($"Invalid message length: {msgLen}");
                 }
 
-                if (bufferLen < 4 + msgLen) return false; // ÏûÏ¢ÌåÎ´ÍêÕû
+                if (bufferLen < 4 + msgLen) return false; // æ¶ˆæ¯ä½“æœªå®Œæ•´
 
-                // È¡³öÍêÕûÏûÏ¢
+                // å–å‡ºå®Œæ•´æ¶ˆæ¯
                 byte[] msg = new byte[msgLen];
                 _recvBuffer.Position = 4;
                 _recvBuffer.Read(msg, 0, msgLen);
 
-                // É¾³ıÒÑ¶ÁÈ¡µÄÊı¾İ£¨4 + msgLen£©
+                // åˆ é™¤å·²è¯»å–çš„æ•°æ®ï¼ˆ4 + msgLenï¼‰
                 byte[] remaining = new byte[bufferLen - 4 - msgLen];
                 _recvBuffer.Position = 4 + msgLen;
                 _recvBuffer.Read(remaining, 0, remaining.Length);
@@ -149,7 +200,7 @@ namespace KnotLink
             }
         }
 
-        // ---------- ĞÄÌøÑ­»· ----------
+        // ---------- å¿ƒè·³å¾ªç¯ ----------
         private async Task HeartbeatLoopAsync(CancellationToken cancellationToken)
         {
             try
@@ -161,35 +212,65 @@ namespace KnotLink
                     {
                         await SendAsync(HeartbeatMessage, cancellationToken).ConfigureAwait(false);
                     }
-                    catch { /* ºöÂÔĞÄÌø·¢ËÍÊ§°Ü */ }
+                    catch { /* å¿½ç•¥å¿ƒè·³å‘é€å¤±è´¥ */ }
                 }
             }
-            catch (OperationCanceledException) { /* Õı³£ */ }
+            catch (OperationCanceledException) { /* æ­£å¸¸ */ }
         }
 
-        // ---------- ÊÍ·Å ----------
+        private void CloseSocket()
+        {
+            _stream?.Dispose();
+            _client?.Close();
+        }
+
+        // ---------- é‡Šæ”¾ ----------
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
             _cts.Cancel();
+            bool sendLockTaken = false;
+            try
+            {
+                sendLockTaken = _sendLock.Wait(TimeSpan.FromSeconds(2));
+                CloseSocket();
+            }
+            finally
+            {
+                if (sendLockTaken) _sendLock.Release();
+            }
+
             try { _readTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
             try { _heartbeatTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
 
-            _stream?.Dispose();
-            _client?.Close();
+            _sendLock.Dispose();
             _cts.Dispose();
             _recvBuffer.Dispose();
         }
 
         public async ValueTask DisposeAsync()
         {
-            _cts.Cancel();
-            if (_readTask != null) try { await _readTask; } catch { }
-            if (_heartbeatTask != null) try { await _heartbeatTask; } catch { }
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-            _stream?.Dispose();
-            _client?.Close();
+            _cts.Cancel();
+            bool sendLockTaken = false;
+            try
+            {
+                sendLockTaken = await _sendLock.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                CloseSocket();
+            }
+            finally
+            {
+                if (sendLockTaken) _sendLock.Release();
+            }
+
+            if (_readTask != null) try { await _readTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
+            if (_heartbeatTask != null) try { await _heartbeatTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
+
+            _sendLock.Dispose();
             _cts.Dispose();
-            await _recvBuffer.DisposeAsync();
+            await _recvBuffer.DisposeAsync().ConfigureAwait(false);
         }
     }
 }

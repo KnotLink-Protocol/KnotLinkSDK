@@ -6,7 +6,7 @@
 
 import java.nio.charset.StandardCharsets;
 
-public class OpenSocketResponser {
+public class OpenSocketResponser implements AutoCloseable {
     private TcpClient KLresponser;
     private String appID;
     private String openSocketID;
@@ -29,8 +29,7 @@ public class OpenSocketResponser {
 
     private void init() {
         KLresponser = new TcpClient();
-        KLresponser.connectToServer("127.0.0.1", 6372);
-        System.out.println("OKK");
+        KLresponser.connectToServer("127.0.0.1", 6378);
 
         KLresponser.setDataReceivedListener(this::dataRecv);
 
@@ -39,17 +38,11 @@ public class OpenSocketResponser {
     }
 
     private void dataRecv(String s_data) {
-
         String delimiter = "&\\*&"; // 分隔符
-        String[] parts = s_data.split(delimiter);
-
-        // 打印每个部分
-        for (int i = 0; i < parts.length; i++) {
-            System.out.println("Part " + (i + 1) + ": " + parts[i]);
-        }
+        String[] parts = s_data.split(delimiter, 2);
 
         if (parts.length != 2) {
-            System.err.println("Invalid data format. Expected two parts separated by " + delimiter);
+            System.err.println("Invalid data format. Expected two parts separated by &*&");
             return;
         }
 
@@ -67,10 +60,14 @@ public class OpenSocketResponser {
     }
 
     public void sendBack(byte[] data, String questionID) {
-        String data_r = questionID + "&*&" + new String(data, StandardCharsets.UTF_8);
-        KLresponser.sendData(data_r);
+        byte[] prefix = (questionID + "&*&").getBytes(StandardCharsets.UTF_8);
+        byte[] packet = new byte[prefix.length + data.length];
+        System.arraycopy(prefix, 0, packet, 0, prefix.length);
+        System.arraycopy(data, 0, packet, prefix.length, data.length);
+        KLresponser.sendData(packet);
     }
 
+    @Override
     public void close() {
         KLresponser.close();
     }

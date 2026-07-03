@@ -7,18 +7,21 @@
 import java.io.*;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-public class TcpClient {
+public class TcpClient implements AutoCloseable {
     private Socket socket;
     private OutputStream out;
     private InputStream in;
     private ScheduledExecutorService scheduler;
-    private final byte[] heartbeatMessageBytes = "heartbeat".getBytes();
-    private final byte[] heartbeatResponseBytes = "heartbeat_response".getBytes();
-    private boolean running = false;
+    private Thread readThread;
+    private final byte[] heartbeatMessageBytes = "heartbeat".getBytes(StandardCharsets.UTF_8);
+    private final byte[] heartbeatResponseBytes = "heartbeat_response".getBytes(StandardCharsets.UTF_8);
+    private volatile boolean running = false;
 
     // 接收缓冲区
     private ByteBuffer buffer = ByteBuffer.allocate(0);
@@ -36,7 +39,9 @@ public class TcpClient {
             System.out.println("Connected to server at " + host + ":" + port);
             this.running = true;
             this.startHeartbeat();
-            new Thread(this::readData).start();
+            this.readThread = new Thread(this::readData, "KnotLink-TcpClient-Reader");
+            this.readThread.setDaemon(true);
+            this.readThread.start();
             return true;
         } catch (IOException e) {
             System.err.println("Failed to connect to server: " + e.getMessage());
@@ -45,7 +50,7 @@ public class TcpClient {
     }
 
     // ---------- 发送数据（内部带长度前缀） ----------
-    private void writeWithLengthPrefix(byte[] data) throws IOException {
+    private synchronized void writeWithLengthPrefix(byte[] data) throws IOException {
         if (data.length > MAX_MSG_SIZE) {
             throw new IOException("Message too large: " + data.length);
         }
@@ -64,7 +69,7 @@ public class TcpClient {
             return;
         }
         try {
-            byte[] bytes = data.getBytes("UTF-8");
+            byte[] bytes = data.getBytes(StandardCharsets.UTF_8);
             writeWithLengthPrefix(bytes);
         } catch (IOException e) {
             System.err.println("Send data error: " + e.getMessage());
@@ -90,7 +95,7 @@ public class TcpClient {
             this.scheduler = Executors.newSingleThreadScheduledExecutor();
         }
         this.scheduler.scheduleAtFixedRate(() -> {
-            if (this.running && !socket.isClosed()) {
+            if (this.running && socket != null && !socket.isClosed()) {
                 try {
                     writeWithLengthPrefix(heartbeatMessageBytes);
                     System.out.println("发送心跳包成功");
@@ -104,7 +109,7 @@ public class TcpClient {
     private void stopHeartbeat() {
         this.running = false;
         if (this.scheduler != null) {
-            this.scheduler.shutdown();
+            this.scheduler.shutdownNow();
             this.scheduler = null;
         }
     }
@@ -114,22 +119,30 @@ public class TcpClient {
         System.out.println("DEBUG: Start reading from server...");
         try {
             byte[] chunk = new byte[4096];
-            while (running && !socket.isClosed()) {
+            while (running && socket != null && !socket.isClosed()) {
                 int bytesRead = in.read(chunk);
                 if (bytesRead == -1) break;
-                // 追加到缓冲区
-                byte[] newData = new byte[buffer.remaining() + bytesRead];
-                buffer = ByteBuffer.wrap(ByteBuffer.allocate(buffer.remaining() + bytesRead)
-                        .put(buffer.array(), 0, buffer.remaining())
-                        .put(chunk, 0, bytesRead).array());
+                appendToBuffer(chunk, bytesRead);
                 processBuffer();
             }
         } catch (IOException e) {
             System.err.println("Socket error: " + e.getMessage());
+        } catch (RuntimeException e) {
+            System.err.println("Socket protocol error: " + e.getMessage());
         } finally {
             stopHeartbeat();
             System.out.println("Server disconnected.");
         }
+    }
+
+    private void appendToBuffer(byte[] chunk, int bytesRead) {
+        byte[] pending = new byte[buffer.remaining()];
+        buffer.get(pending);
+
+        byte[] newData = new byte[pending.length + bytesRead];
+        System.arraycopy(pending, 0, newData, 0, pending.length);
+        System.arraycopy(chunk, 0, newData, pending.length, bytesRead);
+        buffer = ByteBuffer.wrap(newData);
     }
 
     // ---------- 解析缓冲区 ----------
@@ -138,8 +151,8 @@ public class TcpClient {
             if (buffer.remaining() < 4) break; // 长度字段未完整
 
             // 读取长度（大端）
-            int length = buffer.getInt(0);
-            if (length == 0 || length > MAX_MSG_SIZE) {
+            int length = buffer.getInt(buffer.position());
+            if (length <= 0 || length > MAX_MSG_SIZE) {
                 System.err.println("Invalid message length: " + length + ", disconnecting");
                 disconnect();
                 return;
@@ -148,26 +161,23 @@ public class TcpClient {
 
             // 提取消息体
             byte[] msgBytes = new byte[length];
-            buffer.position(4);
+            buffer.position(buffer.position() + 4);
             buffer.get(msgBytes);
             // 移除已处理的部分（包括长度前缀）
-            buffer.position(4 + length);
             buffer = buffer.slice(); // 剩余部分
 
             // 处理消息：忽略心跳响应
-            if (msgBytes.length == heartbeatResponseBytes.length && 
-                new String(msgBytes).equals(new String(heartbeatResponseBytes))) {
+            if (Arrays.equals(msgBytes, heartbeatResponseBytes)) {
                 System.out.println("收到心跳响应，忽略");
             } else {
                 System.out.println("收到数据：");
-                // 转换为字符串并通知监听器
-                try {
-                    String received = new String(msgBytes, "UTF-8");
-                    if (dataReceivedListener != null) {
+                String received = new String(msgBytes, StandardCharsets.UTF_8);
+                if (dataReceivedListener != null) {
+                    try {
                         dataReceivedListener.onDataReceived(received);
+                    } catch (RuntimeException e) {
+                        System.err.println("DataReceivedListener error: " + e.getMessage());
                     }
-                } catch (UnsupportedEncodingException e) {
-                    e.printStackTrace();
                 }
             }
             // 继续处理剩余数据
@@ -197,11 +207,12 @@ public class TcpClient {
         } catch (IOException e) {
             System.err.println("Error closing socket: " + e.getMessage());
         }
-        buffer.clear();
+        buffer = ByteBuffer.allocate(0);
         System.out.println("已断开连接");
     }
 
     // 兼容旧 API
+    @Override
     public void close() {
         disconnect();
     }

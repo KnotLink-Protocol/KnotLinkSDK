@@ -23,7 +23,7 @@ public class SignalSender {
 
     private void init() {
         KLsender = new TcpClient();
-        connected = KLsender.connectToServer("127.0.0.1", 6378);
+        connected = KLsender.connectToServer("127.0.0.1", 6370);
         if (!connected) {
             System.err.println("SignalSender failed to connect to KnotLink server.");
         }
