@@ -23,6 +23,7 @@ namespace KnotLink
         private TcpClient? _client;
         private NetworkStream? _stream;
         private readonly CancellationTokenSource _cts = new();
+        private readonly SemaphoreSlim _sendLock = new(1, 1);
         private Task? _readTask;
         private Task? _heartbeatTask;
         private readonly byte[] _lenBuffer = new byte[4];
@@ -61,9 +62,17 @@ namespace KnotLink
             byte[] lenBytes = BitConverter.GetBytes(payload.Length);
             if (BitConverter.IsLittleEndian) Array.Reverse(lenBytes);
 
-            await _stream.WriteAsync(lenBytes, 0, 4, cancellationToken).ConfigureAwait(false);
-            await _stream.WriteAsync(payload, 0, payload.Length, cancellationToken).ConfigureAwait(false);
-            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _stream.WriteAsync(lenBytes, 0, 4, cancellationToken).ConfigureAwait(false);
+                await _stream.WriteAsync(payload, 0, payload.Length, cancellationToken).ConfigureAwait(false);
+                await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
         }
 
         // ---------- 接收循环（缓冲 + 解析长度前缀） ----------
@@ -93,7 +102,16 @@ namespace KnotLink
                             continue; // 忽略心跳回复
 
                         if (OnDataReceivedAsync != null)
-                            await OnDataReceivedAsync(text).ConfigureAwait(false);
+                        {
+                            try
+                            {
+                                await OnDataReceivedAsync(text).ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                // 用户回调异常不应终止底层接收循环。
+                            }
+                        }
                     }
                 }
             }
@@ -171,11 +189,13 @@ namespace KnotLink
         public void Dispose()
         {
             _cts.Cancel();
+            _stream?.Dispose();
+            _client?.Close();
+
             try { _readTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
             try { _heartbeatTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
 
-            _stream?.Dispose();
-            _client?.Close();
+            _sendLock.Dispose();
             _cts.Dispose();
             _recvBuffer.Dispose();
         }
@@ -183,13 +203,15 @@ namespace KnotLink
         public async ValueTask DisposeAsync()
         {
             _cts.Cancel();
-            if (_readTask != null) try { await _readTask; } catch { }
-            if (_heartbeatTask != null) try { await _heartbeatTask; } catch { }
-
             _stream?.Dispose();
             _client?.Close();
+
+            if (_readTask != null) try { await _readTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
+            if (_heartbeatTask != null) try { await _heartbeatTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
+
+            _sendLock.Dispose();
             _cts.Dispose();
-            await _recvBuffer.DisposeAsync();
+            await _recvBuffer.DisposeAsync().ConfigureAwait(false);
         }
     }
 }

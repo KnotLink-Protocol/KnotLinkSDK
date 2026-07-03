@@ -13,7 +13,12 @@ public class KLKVMap : Dictionary<string, string>
     public string Serialize()
     {
         // 将 KLKVMap 序列化为键值对字符串
-        return string.Join(";", this.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+        var pairs = new List<string>();
+        foreach (KeyValuePair<string, string> kvp in this)
+        {
+            pairs.Add($"{kvp.Key}={kvp.Value}");
+        }
+        return string.Join(";", pairs);
     }
 
     public void Deserialize(string keyValueString)
@@ -34,6 +39,6 @@ public class KLKVMap : Dictionary<string, string>
     public string Get(string key, string defaultVal = "")
     {
         // 安全地读取键值对
-        return this.TryGetValue(key, out string value) ? value : defaultVal;
+        return this.TryGetValue(key, out string? value) ? value ?? defaultVal : defaultVal;
     }
 }
