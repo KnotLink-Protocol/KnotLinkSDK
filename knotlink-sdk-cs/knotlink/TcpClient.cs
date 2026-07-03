@@ -28,8 +28,10 @@ namespace KnotLink
         private Task? _heartbeatTask;
         private readonly byte[] _lenBuffer = new byte[4];
         private readonly MemoryStream _recvBuffer = new();
+        private int _disposed;
 
         public Func<string, Task>? OnDataReceivedAsync { get; set; }
+        public Func<Exception, Task>? OnErrorAsync { get; set; }
         public bool Running => _client?.Connected == true && !_cts.IsCancellationRequested;
 
         public KlTcpClient(TimeSpan? heartbeatInterval = null)
@@ -40,6 +42,9 @@ namespace KnotLink
         // ---------- 连接 ----------
         public async Task<bool> ConnectAsync(string host, int port)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KlTcpClient));
+
             _client = new TcpClient();
             await _client.ConnectAsync(host, port).ConfigureAwait(false);
             _stream = _client.GetStream();
@@ -52,6 +57,8 @@ namespace KnotLink
         // ---------- 发送（加长度前缀） ----------
         public async Task SendAsync(string data, CancellationToken cancellationToken = default)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KlTcpClient));
             if (_stream == null) throw new InvalidOperationException("Not connected.");
 
             byte[] payload = Encoding.UTF8.GetBytes(data);
@@ -65,6 +72,9 @@ namespace KnotLink
             await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
+                if (Volatile.Read(ref _disposed) != 0)
+                    throw new ObjectDisposedException(nameof(KlTcpClient));
+
                 await _stream.WriteAsync(lenBytes, 0, 4, cancellationToken).ConfigureAwait(false);
                 await _stream.WriteAsync(payload, 0, payload.Length, cancellationToken).ConfigureAwait(false);
                 await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -107,21 +117,44 @@ namespace KnotLink
                             {
                                 await OnDataReceivedAsync(text).ConfigureAwait(false);
                             }
-                            catch
+                            catch (Exception ex)
                             {
-                                // 用户回调异常不应终止底层接收循环。
+                                // 用户回调异常不应终止底层接收循环，但需要对调用方可见。
+                                await ReportErrorAsync(ex).ConfigureAwait(false);
                             }
                         }
                     }
                 }
             }
             catch (OperationCanceledException) { /* 正常退出 */ }
-            catch (Exception) { /* 网络错误，静默退出 */ }
+            catch (Exception ex) when (Volatile.Read(ref _disposed) == 0)
+            {
+                await ReportErrorAsync(ex).ConfigureAwait(false);
+            }
+            catch (Exception) { /* 释放时关闭 socket 可能触发异常，静默退出 */ }
             finally
             {
                 // 连接断开，取消所有任务
                 _cts.Cancel();
             }
+        }
+
+        private async Task ReportErrorAsync(Exception ex)
+        {
+            if (OnErrorAsync != null)
+            {
+                try
+                {
+                    await OnErrorAsync(ex).ConfigureAwait(false);
+                    return;
+                }
+                catch
+                {
+                    // 错误处理器自身失败时退回到标准错误输出。
+                }
+            }
+
+            Console.Error.WriteLine(ex.Message);
         }
 
         // ---------- 从缓冲区提取一条完整消息 ----------
@@ -185,12 +218,28 @@ namespace KnotLink
             catch (OperationCanceledException) { /* 正常 */ }
         }
 
+        private void CloseSocket()
+        {
+            _stream?.Dispose();
+            _client?.Close();
+        }
+
         // ---------- 释放 ----------
         public void Dispose()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
             _cts.Cancel();
-            _stream?.Dispose();
-            _client?.Close();
+            bool sendLockTaken = false;
+            try
+            {
+                sendLockTaken = _sendLock.Wait(TimeSpan.FromSeconds(2));
+                CloseSocket();
+            }
+            finally
+            {
+                if (sendLockTaken) _sendLock.Release();
+            }
 
             try { _readTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
             try { _heartbeatTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
@@ -202,9 +251,19 @@ namespace KnotLink
 
         public async ValueTask DisposeAsync()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
             _cts.Cancel();
-            _stream?.Dispose();
-            _client?.Close();
+            bool sendLockTaken = false;
+            try
+            {
+                sendLockTaken = await _sendLock.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                CloseSocket();
+            }
+            finally
+            {
+                if (sendLockTaken) _sendLock.Release();
+            }
 
             if (_readTask != null) try { await _readTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
             if (_heartbeatTask != null) try { await _heartbeatTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
