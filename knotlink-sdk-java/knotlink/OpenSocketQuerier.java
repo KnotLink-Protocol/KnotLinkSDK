@@ -4,79 +4,118 @@
  * SPDX-License-Identifier: MIT
  */
 
-import java.io.EOFException;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.Socket;
-import java.net.SocketTimeoutException;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
-import java.util.logging.Level;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Logger;
 
-public class OpenSocketQuerier {
-    private static final String SERVER_IP = "127.0.0.1";
-    private static final int QUERIER_PORT = 6376;
-    private static final int SOCKET_TIMEOUT_MS = 5000;
-    private static final int MAX_MSG_SIZE = 16 * 1024 * 1024; // 16MB
+/**
+ * 持久化 TCP 查询器（单请求模式，与 Rust 版本语义一致）。
+ * 同一时间仅支持一个等待响应的请求，后发会覆盖前一个。
+ */
+public class OpenSocketQuerier implements AutoCloseable {
     private static final Logger LOGGER = Logger.getLogger(OpenSocketQuerier.class.getName());
+    private static final String DEFAULT_SERVER_ADDR = "127.0.0.1:6376";
 
-    public static CompletableFuture<String> query(String appID, String openSocketID, String question) {
-        return CompletableFuture.supplyAsync(() -> {
-            try (Socket socket = new Socket(SERVER_IP, QUERIER_PORT)) {
-                socket.setSoTimeout(SOCKET_TIMEOUT_MS);
+    private final String appId;
+    private final String openSocketId;
+    private final TcpClient tcpClient;
 
-                String packet = String.format("%s-%s&*&%s", appID, openSocketID, question);
-                LOGGER.info(() -> "Sending query to KnotLink: " + question);
-                writeWithLengthPrefix(socket.getOutputStream(), packet.getBytes(StandardCharsets.UTF_8));
+    // 当前等待响应的 Future（同一时间仅一个）
+    private final AtomicReference<CompletableFuture<String>> pendingFuture = new AtomicReference<>();
 
-                byte[] response = readLengthPrefixedResponse(socket.getInputStream());
-                String responseText = new String(response, StandardCharsets.UTF_8);
-                System.out.println("Received query response: " + responseText);
-                return responseText;
-            } catch (SocketTimeoutException e) {
-                LOGGER.log(Level.WARNING, "Timed out querying KnotLink server", e);
-                return "ERROR: Query timed out.";
-            } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "Failed to query KnotLink server", e);
-                return "ERROR: Cannot connect to KnotLink. Ensure the service is running.";
-            }
-        });
-    }
+    // ---------- 构造函数 ----------
+    public OpenSocketQuerier(String appId, String openSocketId, String serverAddr) throws IOException {
+        this.appId = appId;
+        this.openSocketId = openSocketId;
 
-    private static void writeWithLengthPrefix(OutputStream out, byte[] data) throws IOException {
-        if (data.length > MAX_MSG_SIZE) {
-            throw new IOException("Message too large: " + data.length);
+        String[] parts = serverAddr.split(":");
+        if (parts.length != 2) {
+            throw new IllegalArgumentException("Invalid server address format, expected host:port");
+        }
+        String host = parts[0];
+        int port;
+        try {
+            port = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid port number", e);
         }
 
-        ByteBuffer lengthBuf = ByteBuffer.allocate(4);
-        lengthBuf.putInt(data.length);
-        out.write(lengthBuf.array());
-        out.write(data);
-        out.flush();
+        this.tcpClient = new TcpClient();
+        if (!tcpClient.connectToServer(host, port)) {
+            throw new IOException("Failed to connect to KnotLink server at " + serverAddr);
+        }
+
+        tcpClient.setDataReceivedListener(this::onDataReceived);
+        LOGGER.info("OpenSocketQuerier connected to " + serverAddr);
     }
 
-    private static byte[] readLengthPrefixedResponse(InputStream in) throws IOException {
-        byte[] lengthBytes = readExactly(in, 4);
-        int length = ByteBuffer.wrap(lengthBytes).getInt();
-        if (length <= 0 || length > MAX_MSG_SIZE) {
-            throw new IOException("Invalid message length: " + length);
-        }
-        return readExactly(in, length);
+    public OpenSocketQuerier(String appId, String openSocketId) throws IOException {
+        this(appId, openSocketId, DEFAULT_SERVER_ADDR);
     }
 
-    private static byte[] readExactly(InputStream in, int length) throws IOException {
-        byte[] data = new byte[length];
-        int offset = 0;
-        while (offset < length) {
-            int read = in.read(data, offset, length - offset);
-            if (read == -1) {
-                throw new EOFException("Stream closed before reading " + length + " bytes");
-            }
-            offset += read;
+    // ---------- 数据接收回调 ----------
+    private void onDataReceived(String data) {
+        CompletableFuture<String> future = pendingFuture.getAndSet(null);
+        if (future != null && !future.isDone()) {
+            future.complete(data);
+            LOGGER.fine(() -> "Query response received: " + data);
+        } else {
+            LOGGER.fine(() -> "Ignored unexpected data (no pending future): " + data);
         }
-        return data;
+    }
+
+    // ---------- 构建请求包 ----------
+    private String buildPacket(String question) {
+        return appId + "-" + openSocketId + "&*&" + question;
+    }
+
+    // ---------- 异步查询（等待响应） ----------
+    public CompletableFuture<String> queryL(String question) {
+        String packet = buildPacket(question);
+        tcpClient.sendData(packet);
+
+        CompletableFuture<String> future = new CompletableFuture<>();
+        // 覆盖之前的 pending（与 Rust 行为一致）
+        pendingFuture.set(future);
+        LOGGER.fine(() -> "QueryL sent: " + question);
+        return future;
+    }
+
+    // ---------- 发送查询但不等待响应 ----------
+    public void queryAsync(String question) {
+        String packet = buildPacket(question);
+        tcpClient.sendData(packet);
+        LOGGER.fine(() -> "QueryAsync sent: " + question);
+    }
+
+    // ---------- 同步阻塞查询 ----------
+    public String query(String question, long timeout, TimeUnit unit) throws Exception {
+        return queryL(question).get(timeout, unit);
+    }
+
+    public String query(String question) throws Exception {
+        return query(question, 5, TimeUnit.SECONDS);
+    }
+
+    // ---------- 关闭 ----------
+    @Override
+    public void close() {
+        CompletableFuture<String> future = pendingFuture.getAndSet(null);
+        if (future != null && !future.isDone()) {
+            future.cancel(true);
+        }
+        tcpClient.close();
+        LOGGER.info("OpenSocketQuerier closed");
+    }
+
+    // ---------- 工厂方法 ----------
+    public static OpenSocketQuerier connect(String appId, String openSocketId, String serverAddr) throws IOException {
+        return new OpenSocketQuerier(appId, openSocketId, serverAddr);
+    }
+
+    public static OpenSocketQuerier connect(String appId, String openSocketId) throws IOException {
+        return new OpenSocketQuerier(appId, openSocketId);
     }
 }
