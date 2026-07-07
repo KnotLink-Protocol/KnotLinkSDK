@@ -61,6 +61,25 @@ class OpenSocketQuerier:
         """
         self.callback = callback
 
+    def disconnect(self):
+        """断开连接并释放资源"""
+        if hasattr(self, 'KLquerier') and self.KLquerier:
+            self.KLquerier.disconnect()
+        # 唤醒可能在 query() 中等待的线程
+        if self.query_event:
+            self.query_event.set()
+
+    def close(self):
+        """断开连接（disconnect 的别名）"""
+        self.disconnect()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+        return False
+
 # 示例用法
 if __name__ == "__main__":
     def my_callback(data: str):

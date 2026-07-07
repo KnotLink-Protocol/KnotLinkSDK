@@ -4,9 +4,8 @@
 # SPDX-License-Identifier: MIT
 
 from .tcpclient import TcpClient  # 确保 tcpclient.py 在同一目录下
-from queue import Queue
+from queue import Queue, Empty
 import threading
-import time
 
 class OpenSocketResponser:
     def __init__(self, APPID: str, OpenSocketID: str):
@@ -50,15 +49,17 @@ class OpenSocketResponser:
 
     def _process_queue(self):
         """处理队列中的数据"""
-        while True:
-            if not self.data_queue.empty():
-                payload, key = self.data_queue.get()
+        while self.KLresponser.connected:
+            try:
+                payload, key = self.data_queue.get(timeout=0.5)
                 if self.recv_func:
                     response = self.recv_func(payload)
                     if response is not None:
                         self.sendBack(response, key)
                 self.data_queue.task_done()
-            time.sleep(0.01)  # 添加一个小的延时
+            except Empty:
+                # 队列为空，继续循环检查 connected 状态
+                pass
 
     def set_RecvFunc(self, recv_func):
         """
@@ -67,6 +68,22 @@ class OpenSocketResponser:
                           处理函数返回一个 str 类型的响应。
         """
         self.recv_func = recv_func
+
+    def disconnect(self):
+        """断开连接并释放资源"""
+        if hasattr(self, 'KLresponser') and self.KLresponser:
+            self.KLresponser.disconnect()
+
+    def close(self):
+        """断开连接（disconnect 的别名）"""
+        self.disconnect()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+        return False
 
 # 示例用法
 if __name__ == "__main__":

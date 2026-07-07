@@ -30,7 +30,10 @@ class TcpClient:
             print("连接失败：", e)
 
     def start_heart_beat(self):
+        if not self.connected:
+            return
         self.heart_beat_timer = threading.Timer(self.heart_beat_interval, self.send_heart_beat)
+        self.heart_beat_timer.daemon = True
         self.heart_beat_timer.start()
 
     # ---------- 发送数据：添加长度前缀 ----------
@@ -58,10 +61,10 @@ class TcpClient:
         if self.connected:
             self._write_with_length_prefix(b"heartbeat")
             print("发送心跳包成功")
+            # 只在仍然连接时重新启动定时器
+            self.start_heart_beat()
         else:
             print("无法发送心跳包，连接已断开。")
-        # 重新启动定时器
-        self.start_heart_beat()
 
     # ---------- 接收数据：缓冲解析 ----------
     def receive_data(self):
@@ -112,10 +115,17 @@ class TcpClient:
             self.received_data_callback(data)
 
     def disconnect(self):
+        # 先标记断开，防止 send_heart_beat 重新创建定时器
         self.connected = False
-        self.tcp_socket.close()
+        # 取消心跳定时器
         if self.heart_beat_timer:
             self.heart_beat_timer.cancel()
+            self.heart_beat_timer = None
+        # 安全关闭 socket
+        try:
+            self.tcp_socket.close()
+        except socket.error:
+            pass
         print("已断开连接")
 
 

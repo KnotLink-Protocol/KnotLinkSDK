@@ -31,6 +31,22 @@ class SignalSender:
         s_data = s_key_bytes + data
         self.KLsender.send_data(s_data)
 
+    def disconnect(self):
+        """断开连接并释放资源"""
+        if hasattr(self, 'KLsender') and self.KLsender:
+            self.KLsender.disconnect()
+
+    def close(self):
+        """断开连接（disconnect 的别名）"""
+        self.disconnect()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+        return False
+
 # 示例用法
 if __name__ == "__main__":
     signal_sender = SignalSender(APPID="1", SignalID="1")
