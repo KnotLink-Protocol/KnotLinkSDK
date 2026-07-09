@@ -6,6 +6,9 @@ import time
 import threading
 from knotlink import SignalSubscriber, SignalSender
 
+_shutdown = threading.Event()
+MAX_ITERATIONS = 5  # 最大循环次数，防止无限运行
+
 
 def run_subscriber():
     def on_received(data):
@@ -14,17 +17,21 @@ def run_subscriber():
     sub = SignalSubscriber("app.knotlinksdk.test", "test_signal")
     sub.set_RecvFunc(on_received)
     print("[Subscriber] Listening...")
-    while True:
-        time.sleep(1)
+    try:
+        while not _shutdown.wait(timeout=1):
+            pass
+    finally:
+        sub.disconnect()
+        print("[Subscriber] Disconnected.")
 
 
 def run_sender():
-    time.sleep(1)
+    _shutdown.wait(timeout=1)
     sender = SignalSender()
     sender.set_config("app.knotlinksdk.test", "test_signal")
     counter = 0
     try:
-        while True:
+        while counter < MAX_ITERATIONS and not _shutdown.is_set():
             counter += 1
             data = f"Signal #{counter}"
             sender.emitt(data)
@@ -32,9 +39,14 @@ def run_sender():
             time.sleep(3)
     except KeyboardInterrupt:
         print("\n[Sender] Stopped by user")
+    finally:
+        sender.disconnect()
+        _shutdown.set()
+        print("[Sender] Disconnected.")
 
 
 if __name__ == "__main__":
     t = threading.Thread(target=run_subscriber, daemon=True)
     t.start()
     run_sender()
+    t.join(timeout=10)

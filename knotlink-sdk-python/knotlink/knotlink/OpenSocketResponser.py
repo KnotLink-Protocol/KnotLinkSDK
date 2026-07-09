@@ -6,9 +6,13 @@
 from .tcpclient import TcpClient  # 确保 tcpclient.py 在同一目录下
 from queue import Queue, Empty
 import threading
+import logging
+from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 class OpenSocketResponser:
-    def __init__(self, APPID: str, OpenSocketID: str):
+    def __init__(self, APPID: str, OpenSocketID: str) -> None:
         self.appID = APPID
         self.openSocketID = OpenSocketID
         self.recv_func = None  # 回调函数（str 类型）
@@ -27,7 +31,7 @@ class OpenSocketResponser:
         # 启动一个线程处理队列中的数据
         threading.Thread(target=self._process_queue, daemon=True).start()
 
-    def sendBack(self, data: str, key: str):
+    def sendBack(self, data: str, key: str) -> None:
         """向客户端发送响应数据"""
         s_key = f"{key}&*&"
         s_key_bytes = s_key.encode("utf-8")
@@ -41,27 +45,30 @@ class OpenSocketResponser:
             key = data[:key_end].decode("utf-8")
             payload = data[key_end + 3:]  # 跳过 "&*&"
         except (ValueError, UnicodeDecodeError) as e:
-            print(f"解析数据失败：{e}")
+            logger.error("Failed to parse data: %s", e)
             return
 
         if payload:
-            self.data_queue.put((payload.decode("utf-8", errors="ignore"), key))
+            self.data_queue.put((payload.decode("utf-8", errors="replace"), key))
 
     def _process_queue(self):
         """处理队列中的数据"""
         while self.KLresponser.connected:
             try:
                 payload, key = self.data_queue.get(timeout=0.5)
+            except Empty:
+                # 队列为空，继续循环检查 connected 状态
+                continue
+
+            try:
                 if self.recv_func:
                     response = self.recv_func(payload)
                     if response is not None:
                         self.sendBack(response, key)
+            finally:
                 self.data_queue.task_done()
-            except Empty:
-                # 队列为空，继续循环检查 connected 状态
-                pass
 
-    def set_RecvFunc(self, recv_func):
+    def set_RecvFunc(self, recv_func: Callable[[str], str]) -> None:
         """
         设置接收到字符串数据后的处理函数。
         :param recv_func: 处理函数，接收一个参数：str 类型的数据。
@@ -69,16 +76,16 @@ class OpenSocketResponser:
         """
         self.recv_func = recv_func
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """断开连接并释放资源"""
         if hasattr(self, 'KLresponser') and self.KLresponser:
             self.KLresponser.disconnect()
 
-    def close(self):
+    def close(self) -> None:
         """断开连接（disconnect 的别名）"""
         self.disconnect()
 
-    def __enter__(self):
+    def __enter__(self) -> "OpenSocketResponser":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):

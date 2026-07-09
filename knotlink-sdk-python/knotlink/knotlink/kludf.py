@@ -9,14 +9,14 @@ class KLUDF:
 
 
 class KLKVMap(dict):
-    def serialize(self):
+    def serialize(self) -> str:
         """
         将 KLKVMap 序列化为键值对字符串
         :return: 键值对字符串
         """
         return ";".join(f"{key}={value}" for key, value in self.items())
 
-    def deserialize(self, keyValueString):
+    def deserialize(self, keyValueString: str) -> None:
         """
         将键值对字符串反序列化为 KLKVMap
         :param keyValueString: 键值对字符串
@@ -28,7 +28,7 @@ class KLKVMap(dict):
             if len(keyValue) == 2:
                 self[keyValue[0]] = keyValue[1]
 
-    def get(self, key , defaultVal = ""):
+    def get(self, key: str, defaultVal: str = "") -> str:
         """
         安全地读取键值对
         :param key: 键

@@ -5,19 +5,21 @@
 
 from .tcpclient import TcpClient  # 确保 tcpclient.py 在同一目录下
 import time
+from typing import Optional
 
 class SignalSender:
-    def __init__(self, APPID=None, SignalID=None):
+    def __init__(self, APPID: Optional[str] = None, SignalID: Optional[str] = None) -> None:
         self.appID = APPID
         self.signalID = SignalID
         self.KLsender = TcpClient()
         self.KLsender.connect_to_server("127.0.0.1", 6370)
 
-    def set_config(self, APPID, SignalID):
+    def set_config(self, APPID: str, SignalID: str) -> None:
         self.appID = APPID
         self.signalID = SignalID
 
-    def emitt(self, data):
+    def emitt(self, data: str) -> None:
+        """发送信号（命名 emitt 而非 emit，避免与 PyQt/PySide 的 emit 关键字冲突）"""
         self._emitt(self.appID, self.signalID, data)
 
     def _emitt(self, APPID, SignalID, data):
@@ -31,16 +33,16 @@ class SignalSender:
         s_data = s_key_bytes + data
         self.KLsender.send_data(s_data)
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """断开连接并释放资源"""
         if hasattr(self, 'KLsender') and self.KLsender:
             self.KLsender.disconnect()
 
-    def close(self):
+    def close(self) -> None:
         """断开连接（disconnect 的别名）"""
         self.disconnect()
 
-    def __enter__(self):
+    def __enter__(self) -> "SignalSender":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
