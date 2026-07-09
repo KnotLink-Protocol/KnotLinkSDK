@@ -7,7 +7,9 @@
 #include "tcpclient.h"
 #include <QDebug>
 #include <QDataStream>
-#include <QtEndian>   // 提供 qFromBigEndian, qToBigEndian
+#include <QtEndian>
+
+Q_LOGGING_CATEGORY(knotlinkTcp, "knotlink.tcp")
 
 const quint32 MAX_MSG_SIZE = 16 * 1024 * 1024; // 16MB，与服务器一致
 
@@ -15,45 +17,35 @@ TcpClient::TcpClient(QObject *parent) : QObject(parent) {
 	tcpSocket = new QTcpSocket(this);
 	heartBeatTimer = new QTimer(this);
 	heartBeatTimer->setInterval(180000);  // 3分钟
-}
 
-TcpClient::~TcpClient() {
-	delete tcpSocket;
-	if (heartBeatTimer != nullptr) {
-		delete heartBeatTimer;
-	}
-}
-
-// 连接服务器
-void TcpClient::connectToServer(const QString &ip, uint16_t port) {
-	tcpSocket->connectToHost(QHostAddress(ip), port);
-	
-	if (!tcpSocket->waitForConnected(3000)) {
-		qDebug() << "连接失败：" << tcpSocket->errorString();
-		return;
-	}
-	
-	// 连接定时器信号
+	// 信号在构造函数中连接，避免 connectToServer 后错过事件
 	connect(heartBeatTimer, &QTimer::timeout, this, &TcpClient::sendHeartbeat);
-	heartBeatTimer->start();
-	
 	connect(tcpSocket, &QTcpSocket::connected, this, &TcpClient::socketConnected);
 	connect(tcpSocket, &QTcpSocket::disconnected, this, &TcpClient::socketDisconnected);
 	connect(tcpSocket, &QTcpSocket::readyRead, this, &TcpClient::readData);
-	// 可选错误处理
+}
+
+// Qt parent 机制自动管理子对象生命周期，无需手动 delete
+
+void TcpClient::connectToServer(const QString &ip, uint16_t port) {
+	tcpSocket->connectToHost(QHostAddress(ip), port);
+
+	if (!tcpSocket->waitForConnected(3000)) {
+		qCWarning(knotlinkTcp) << "Connection failed:" << tcpSocket->errorString();
+		return;
+	}
+
+	heartBeatTimer->start();
 }
 
 void TcpClient::socketConnected() {
-	// 立即发送一次心跳（可选）
 	sendHeartbeat();
 	emit connected();
 }
 
 void TcpClient::socketDisconnected() {
-	emit disconnected();
 	heartBeatTimer->stop();
-	delete heartBeatTimer;
-	heartBeatTimer = nullptr;
+	emit disconnected();
 }
 
 // ------------------------------------------------------------
@@ -73,7 +65,7 @@ void TcpClient::sendData(const QByteArray &data) {
 	if (tcpSocket->state() == QAbstractSocket::ConnectedState) {
 		writeWithLengthPrefix(data);
 	} else {
-		qDebug() << "无法发送数据，连接已断开。";
+		qCWarning(knotlinkTcp) << "Cannot send data, disconnected";
 	}
 }
 
@@ -98,7 +90,7 @@ void TcpClient::processBuffer() {
 		quint32 len = qFromBigEndian<quint32>((const uchar*)buffer.constData());
 		
 		if (len == 0 || len > MAX_MSG_SIZE) {
-			qDebug() << "无效的消息长度:" << len << "，断开连接";
+			qCCritical(knotlinkTcp) << "Invalid message length:" << len << ", disconnecting";
 			tcpSocket->disconnectFromHost();
 			return;
 		}
@@ -111,7 +103,7 @@ void TcpClient::processBuffer() {
 		
 		// 处理消息：忽略心跳响应，其他发出信号
 		if (msg == "heartbeat_response") {
-			qDebug() << "收到心跳响应，忽略";
+			qCDebug(knotlinkTcp) << "Heartbeat response received, ignoring";
 		} else {
 			emit receivedData(msg);
 		}
@@ -125,13 +117,13 @@ void TcpClient::processBuffer() {
 void TcpClient::sendHeartbeat() {
 	if (tcpSocket->state() == QAbstractSocket::ConnectedState) {
 		writeWithLengthPrefix("heartbeat");
-		qDebug() << "发送心跳包";
+		qCDebug(knotlinkTcp) << "Heartbeat sent";
 	} else {
-		qDebug() << "无法发送心跳包，连接已断开。";
+		qCDebug(knotlinkTcp) << "Cannot send heartbeat, disconnected";
 	}
 }
 
 // 错误处理（可选）
 void TcpClient::handleError(QAbstractSocket::SocketError socketError) {
-	qDebug() << "错误：" << socketError << " - " << tcpSocket->errorString();
+	qCWarning(knotlinkTcp) << "Socket error:" << socketError << "-" << tcpSocket->errorString();
 }

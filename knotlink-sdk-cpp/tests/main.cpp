@@ -26,6 +26,7 @@
 #include "../knotlink/OpenSocketResponser.hpp"
 #include "../knotlink/OpenSocketQuerier.hpp"
 #include <iostream>
+using namespace knotlink;
 
 int main() {
 	// 1. 启动回答者

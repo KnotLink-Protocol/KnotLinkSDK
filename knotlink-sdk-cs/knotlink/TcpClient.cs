@@ -161,12 +161,14 @@ namespace KnotLink
         private bool TryExtractMessage(out byte[]? message)
         {
             message = null;
+            int msgLenToThrow = 0;
+            bool shouldThrow = false;
+
             lock (_recvBuffer)
             {
                 long bufferLen = _recvBuffer.Length;
-                if (bufferLen < 4) return false; // 连长度头都不够
+                if (bufferLen < 4) return false;
 
-                // 读取长度头（大端）
                 _recvBuffer.Position = 0;
                 _recvBuffer.Read(_lenBuffer, 0, 4);
                 int msgLen = BitConverter.ToInt32(_lenBuffer, 0);
@@ -174,30 +176,35 @@ namespace KnotLink
 
                 if (msgLen <= 0 || msgLen > MaxMessageSize)
                 {
-                    // 无效长度，清空缓冲区并断开
                     _recvBuffer.SetLength(0);
                     _recvBuffer.Position = 0;
-                    throw new InvalidDataException($"Invalid message length: {msgLen}");
+                    shouldThrow = true;
+                    msgLenToThrow = msgLen;
+                    // 退出 lock 块再抛异常
                 }
+                else if (bufferLen < 4 + msgLen)
+                {
+                    return false; // 消息体未完整
+                }
+                else
+                {
+                    byte[] msg = new byte[msgLen];
+                    _recvBuffer.Position = 4;
+                    _recvBuffer.Read(msg, 0, msgLen);
 
-                if (bufferLen < 4 + msgLen) return false; // 消息体未完整
+                    byte[] remaining = new byte[bufferLen - 4 - msgLen];
+                    _recvBuffer.Position = 4 + msgLen;
+                    _recvBuffer.Read(remaining, 0, remaining.Length);
+                    _recvBuffer.SetLength(0);
+                    _recvBuffer.Position = 0;
+                    _recvBuffer.Write(remaining, 0, remaining.Length);
 
-                // 取出完整消息
-                byte[] msg = new byte[msgLen];
-                _recvBuffer.Position = 4;
-                _recvBuffer.Read(msg, 0, msgLen);
-
-                // 删除已读取的数据（4 + msgLen）
-                byte[] remaining = new byte[bufferLen - 4 - msgLen];
-                _recvBuffer.Position = 4 + msgLen;
-                _recvBuffer.Read(remaining, 0, remaining.Length);
-                _recvBuffer.SetLength(0);
-                _recvBuffer.Position = 0;
-                _recvBuffer.Write(remaining, 0, remaining.Length);
-
-                message = msg;
-                return true;
+                    message = msg;
+                    return true;
+                }
             }
+
+            throw new InvalidDataException($"Invalid message length: {msgLenToThrow}");
         }
 
         // ---------- 心跳循环 ----------

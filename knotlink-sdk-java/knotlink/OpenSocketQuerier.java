@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Logger;
 
 /**
- * 持久化 TCP 查询器（单请求模式，与 Rust 版本语义一致）。
+ * 持久化 TCP 查询器。
  * 同一时间仅支持一个等待响应的请求，后发会覆盖前一个。
  */
 public class OpenSocketQuerier implements AutoCloseable {

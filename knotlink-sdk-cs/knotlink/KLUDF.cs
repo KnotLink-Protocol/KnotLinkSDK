@@ -1,15 +1,20 @@
+/*
+ * KnotLink SDK - C#
+ * Copyright (c) 2024-2026 KnotLink Contributors
+ * SPDX-License-Identifier: MIT
+ */
+
 using System;
 using System.Collections.Generic;
 
-public class KLUDF
+namespace KnotLink
 {
-    public KLUDF()
+    public class KLUDF
     {
     }
-}
 
-public class KLKVMap : Dictionary<string, string>
-{
+    public class KLKVMap : Dictionary<string, string>
+    {
     public string Serialize()
     {
         // 将 KLKVMap 序列化为键值对字符串
@@ -41,4 +46,5 @@ public class KLKVMap : Dictionary<string, string>
         // 安全地读取键值对
         return this.TryGetValue(key, out string? value) ? value ?? defaultVal : defaultVal;
     }
+}
 }

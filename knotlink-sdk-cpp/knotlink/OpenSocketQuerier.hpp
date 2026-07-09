@@ -12,7 +12,10 @@
 #include <mutex>
 #include <condition_variable>
 #include <thread>
+#include <chrono>
 #include "TcpClient.hpp"
+
+namespace knotlink {
 
 class OpenSocketQuerier {
 public:
@@ -21,7 +24,9 @@ public:
         KLquerier->connectToServer("127.0.0.1", 6376);
         KLquerier->setOnDataReceivedCallback(
             std::bind(&OpenSocketQuerier::handleReceivedData, this, std::placeholders::_1));
-        while (!KLquerier->running) { /* wait connect */ }
+        while (!KLquerier->running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 
     ~OpenSocketQuerier() {
@@ -34,16 +39,19 @@ public:
         openSocketID = OpenSocketID;
     }
 
-    // 同步阻塞提问
-    std::string query_l(const std::string& question) {
+    std::string query_l(const std::string& question, int timeoutMs = 5000) {
         std::unique_lock<std::mutex> lock(mtx_);
-        std::string qid = "1";
+        std::string qid = std::to_string(++questionCounter_);
         std::string packet = appID + "-" + openSocketID + "&*&" + question;
         KLquerier->sendData(packet);
 
-        cv_.wait(lock, [this, &qid] { return answers_.count(qid); });
-        std::string ans = answers_["1"];
-        answers_.erase("1");
+        if (!cv_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                          [this, &qid] { return answers_.count(qid); })) {
+            throw std::runtime_error("query_l timed out after " + std::to_string(timeoutMs) + "ms");
+        }
+
+        std::string ans = answers_[qid];
+        answers_.erase(qid);
         return ans;
     }
 
@@ -58,12 +66,13 @@ private:
     uint64_t questionCounter_ = 0;
 
     void handleReceivedData(const std::string& data) {
-		std::cout<<data<<std::endl;
-
         std::lock_guard<std::mutex> lock(mtx_);
-        answers_["1"] = data;
+        std::string qid = std::to_string(questionCounter_);
+        answers_[qid] = data;
         cv_.notify_all();
     }
 };
+
+} // namespace knotlink
 
 #endif // OPEN_SOCKET_QUERIER_HPP

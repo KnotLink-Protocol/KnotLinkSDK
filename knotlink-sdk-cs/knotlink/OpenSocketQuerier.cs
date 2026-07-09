@@ -113,7 +113,7 @@ namespace KnotLink
         /// 回复将由 SetRecvFunc 设置的回调处理。
         /// </summary>
         /// <param name="question">问题内容</param>
-        public void QueryFireAndForget(string question)
+        public void QueryAsync(string question)
         {
             SendQuery(question);
         }

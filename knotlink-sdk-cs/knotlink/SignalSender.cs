@@ -32,11 +32,14 @@ namespace KnotLink
         public Task EmitAsync(string data)
         {
             if (string.IsNullOrEmpty(_appId) || string.IsNullOrEmpty(_signalId))
-            {
                 throw new InvalidOperationException("AppId and SignalId must be set before emitting.");
-            }
 
-            string sKey = _appId + "-" + _signalId + "&*&";
+            return EmitAsync(_appId, _signalId, data);
+        }
+
+        public Task EmitAsync(string appId, string signalId, string data)
+        {
+            string sKey = appId + "-" + signalId + "&*&";
             return _client.SendAsync(sKey + data);
         }
 

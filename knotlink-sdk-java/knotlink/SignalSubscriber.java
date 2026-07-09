@@ -6,8 +6,8 @@
 
 public class SignalSubscriber {
     private TcpClient KLsubscriber;
-    private final String appID;
-    private final String signalID;
+    private String appID;
+    private String signalID;
 
     // 定义一个回调接口
     public interface SignalListener {
@@ -19,6 +19,13 @@ public class SignalSubscriber {
     public SignalSubscriber(String appID, String signalID) {
         this.appID = appID;
         this.signalID = signalID;
+    }
+
+    public void subscribe(String appID, String signalID) {
+        this.appID = appID;
+        this.signalID = signalID;
+        String s_key = appID + "-" + signalID;
+        KLsubscriber.sendData(s_key);
     }
 
     public void setSignalListener(SignalListener listener) {

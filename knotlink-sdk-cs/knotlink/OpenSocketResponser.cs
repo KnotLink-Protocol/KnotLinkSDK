@@ -16,7 +16,6 @@ namespace KnotLink
         private readonly string _openSocketId;
         private readonly string _host;
         private readonly int _port;
-        private bool _registered;
 
         public Func<string, Task<string>>? OnQuestionAsync { get; set; }
 
@@ -46,12 +45,6 @@ namespace KnotLink
 
         private async Task HandleDataAsync(string data)
         {
-            if (!_registered && data == _appId + "-" + _openSocketId)
-            {
-                _registered = true;
-                return;
-            }
-
             string[] parts = data.Split(new[] { "&*&" }, 2, StringSplitOptions.None);
             if (parts.Length != 2)
             {
@@ -60,10 +53,11 @@ namespace KnotLink
 
             string questionId = parts[0];
             string payload = parts[1];
-            string reply = OnQuestionAsync != null
-                ? await OnQuestionAsync(payload).ConfigureAwait(false)
-                : string.Empty;
 
+            if (OnQuestionAsync == null)
+                throw new InvalidOperationException("OnQuestionAsync callback is not set. Call SetRecvFunc or set OnQuestionAsync before receiving data.");
+
+            string reply = await OnQuestionAsync(payload).ConfigureAwait(false);
             string response = questionId + "&*&" + reply;
             await _client.SendAsync(response).ConfigureAwait(false);
         }

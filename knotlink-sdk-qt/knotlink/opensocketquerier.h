@@ -35,7 +35,7 @@ private:
     TcpClient* KLquerier;
     QString appID;
     QString openSocketID;
-    bool lock = 0;
+    bool queryPending = false;  // 标记 query_l 正在等待响应
     void init();
 };
 

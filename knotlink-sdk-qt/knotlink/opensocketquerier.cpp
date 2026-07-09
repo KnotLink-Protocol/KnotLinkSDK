@@ -32,19 +32,24 @@ void OpenSocketQuerier::setConfig(QString APPID, QString OpenSocketID){
 
 QString OpenSocketQuerier::query_l(QString data)
 {
-
     QString result;
 
-    QEventLoop loop; // 创建局部事件循环
-    QObject::connect(KLquerier, &TcpClient::receivedData, [this,&loop, &result](const QByteArray &data) {
-        result = QString::fromUtf8(data); // 保存信号值
-        lock = 0;
-        loop.quit();   // 退出事件循环
-    });
-
+    QEventLoop loop;
+    queryPending = true;  // 必须在 query() 之前设置，防止响应在 wait 前到达
     query(data);
-    lock = 1;
-    loop.exec();             // 启动事件循环，阻塞直到退出
+
+    QMetaObject::Connection conn = QObject::connect(
+        KLquerier, &TcpClient::receivedData,
+        [&result, &loop](const QByteArray &data) {
+            result = QString::fromUtf8(data);
+            loop.quit();
+        });
+
+    // FIXME: 无超时机制，服务端无响应时永久阻塞
+    loop.exec();
+
+    QObject::disconnect(conn);  // 用完即断开，防止信号泄漏
+    queryPending = false;
 
     return result;
 }
@@ -78,9 +83,8 @@ void OpenSocketQuerier::query(QString APPID, QString OpenSocketID,QByteArray dat
 
 void OpenSocketQuerier::dataRecv(const QByteArray &data)
 {
-    if(lock) return;
+    if (queryPending) return;  // query_l 正在等待，由事件循环处理
     emit dataBack_a(data);
-    // 将 QByteArray 转换为 QString
     QString receivedText = QString::fromUtf8(data);
     emit dataBack(receivedText);
 }
