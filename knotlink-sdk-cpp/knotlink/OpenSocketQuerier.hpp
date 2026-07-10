@@ -39,16 +39,19 @@ public:
         openSocketID = OpenSocketID;
     }
 
-    std::string query_l(const std::string& question, int timeoutMs = 5000) {
+    std::string query_l(const std::string& question, int timeoutMs = -1) {
         std::unique_lock<std::mutex> lock(mtx_);
         std::string qid = std::to_string(++questionCounter_);
         std::string packet = appID + "-" + openSocketID + "&*&" + question;
         KLquerier->sendData(packet);
 
-        if (!cv_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
-                          [this, &qid] { return answers_.count(qid); })) {
+        auto deadline = [&] {
+            if (timeoutMs < 0) { cv_.wait(lock, [this, &qid] { return answers_.count(qid); }); return true; }
+            return cv_.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                [this, &qid] { return answers_.count(qid); });
+        };
+        if (!deadline())
             throw std::runtime_error("query_l timed out after " + std::to_string(timeoutMs) + "ms");
-        }
 
         std::string ans = answers_[qid];
         answers_.erase(qid);

@@ -71,7 +71,7 @@ namespace KnotLink
         /// <returns>服务器回复的字符串</returns>
         /// <exception cref="TimeoutException">超时未收到回复</exception>
         /// <exception cref="InvalidOperationException">已有查询在进行中</exception>
-        public string Query(string question, int timeoutMs = 5000)
+        public string Query(string question, int timeoutMs = -1)
         {
             // 锁定并标记查询开始
             lock (_lock)
@@ -88,7 +88,7 @@ namespace KnotLink
                 SendQuery(question);
 
                 // 等待回复或超时
-                if (!_queryEvent.Wait(timeoutMs))
+                if (!_queryEvent.Wait(timeoutMs < 0 ? System.Threading.Timeout.Infinite : timeoutMs))
                 {
                     lock (_lock) _isQuerying = false;
                     throw new TimeoutException($"Query timed out after {timeoutMs}ms.");

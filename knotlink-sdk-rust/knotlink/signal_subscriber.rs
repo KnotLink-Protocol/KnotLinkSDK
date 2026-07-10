@@ -4,7 +4,10 @@
 
 use anyhow::Result;
 use tokio::sync::mpsc;
+use log::error;
 use super::tcp_client::TcpClient;
+
+const SUBSCRIBER_ADDR: &str = "127.0.0.1:6372";
 
 pub struct SignalSubscriber {
     pub rx: mpsc::UnboundedReceiver<String>,
@@ -12,8 +15,8 @@ pub struct SignalSubscriber {
 }
 
 impl SignalSubscriber {
-    pub async fn new(app_id: String, signal_id: String, server_addr: &str) -> Result<Self> {
-        let (client, tx) = TcpClient::connect(server_addr, 180).await?;
+    pub async fn new(app_id: String, signal_id: String) -> Result<Self> {
+        let (client, tx) = TcpClient::connect(SUBSCRIBER_ADDR, 180).await?;
         let reg = format!("{}-{}", app_id, signal_id);
         tx.send(reg.into_bytes())?;
 
@@ -25,7 +28,7 @@ impl SignalSubscriber {
                 }
             };
             if let Err(e) = client.run(on_data).await {
-                eprintln!("SignalSubscriber TCP 错误: {}", e);
+                error!("SignalSubscriber TCP error: {}", e);
             }
         });
 

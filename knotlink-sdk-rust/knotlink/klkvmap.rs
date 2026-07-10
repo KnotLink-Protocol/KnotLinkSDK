@@ -9,7 +9,7 @@ pub type KLKVMap = HashMap<String, String>;
 pub trait KvMapExt {
     fn serialize(&self) -> String;
     fn deserialize(&mut self, s: &str);
-    fn get(&self, key: &str) -> Option<&String>;
+    fn get_value(&self, key: &str) -> Option<&String>;
 }
 
 impl KvMapExt for HashMap<String, String> {
@@ -30,7 +30,7 @@ impl KvMapExt for HashMap<String, String> {
         }
     }
 
-    fn get(&self, key: &str) -> Option<&String> {
-        self.get(key)
+    fn get_value(&self, key: &str) -> Option<&String> {
+        HashMap::get(self, key)
     }
 }

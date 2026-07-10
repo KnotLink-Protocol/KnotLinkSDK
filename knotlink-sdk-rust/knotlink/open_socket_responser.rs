@@ -4,18 +4,20 @@
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use log::info;
+use log::{error, info};
 use super::tcp_client::TcpClient;
+
+const RESPONSER_ADDR: &str = "127.0.0.1:6378";
 
 pub struct OpenSocketResponser {
     tx: mpsc::UnboundedSender<Vec<u8>>,
-    pub rx: mpsc::UnboundedReceiver<(String, String)>, // (question_id, data)
+    pub rx: mpsc::UnboundedReceiver<(String, String)>,
     _task_handle: tokio::task::JoinHandle<()>,
 }
 
 impl OpenSocketResponser {
-    pub async fn new(app_id: String, open_socket_id: String, server_addr: &str) -> Result<Self> {
-        let (client, tx) = TcpClient::connect(server_addr, 180).await?;
+    pub async fn new(app_id: String, open_socket_id: String) -> Result<Self> {
+        let (client, tx) = TcpClient::connect(RESPONSER_ADDR, 180).await?;
         let reg = format!("{}-{}", app_id, open_socket_id);
         tx.send(reg.into_bytes())?;
 
@@ -27,14 +29,14 @@ impl OpenSocketResponser {
                 if let Ok(s) = String::from_utf8(data) {
                     if let Some((key, t_data)) = s.split_once("&*&") {
                         let _ = msg_tx.send((key.to_string(), t_data.to_string()));
-                        info!("收到请求: key={}, data={}", key, t_data);
+                        info!("Received request: key={}, data={}", key, t_data);
                     } else {
-                        eprintln!("无效数据格式: {}", s);
+                        error!("Invalid data format: {}", s);
                     }
                 }
             };
             if let Err(e) = client.run(on_data).await {
-                eprintln!("OpenSocketResponser TCP 错误: {}", e);
+                error!("OpenSocketResponser TCP error: {}", e);
             }
         });
 
@@ -45,7 +47,6 @@ impl OpenSocketResponser {
         })
     }
 
-    /// 发送响应给指定的 question_id
     pub async fn send_back(&self, question_id: &str, data: &str) -> Result<()> {
         let resp = format!("{}&*&{}", question_id, data);
         self.tx.send(resp.into_bytes())?;
