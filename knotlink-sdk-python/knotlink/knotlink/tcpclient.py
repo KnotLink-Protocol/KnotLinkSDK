@@ -96,6 +96,8 @@ class TcpClient:
                     self.buffer += chunk
                 self._process_buffer()
             except socket.error as e:
+                if not self.connected:
+                    break  # disconnect() 已关 socket，预期内的错误，静默退出
                 logger.error("Failed to receive data: %s", e)
                 self.connected = False
                 break
