@@ -12,6 +12,7 @@
 Q_LOGGING_CATEGORY(knotlinkTcp, "knotlink.tcp")
 
 const quint32 MAX_MSG_SIZE = 16 * 1024 * 1024; // 16MB，与服务器一致
+const QByteArray TcpClient::MAGIC("\x4B\x4B\x00\x02", 4);  // KK + 版本号 2.0
 
 TcpClient::TcpClient(QObject *parent) : QObject(parent) {
 	tcpSocket = new QTcpSocket(this);
@@ -53,10 +54,11 @@ void TcpClient::socketDisconnected() {
 // ------------------------------------------------------------
 void TcpClient::writeWithLengthPrefix(const QByteArray &data) {
 	QByteArray block;
-	QDataStream out(&block, QIODevice::WriteOnly);
+	block.append(MAGIC);                        // 4 字节魔数
+	QDataStream out(&block, QIODevice::WriteOnly | QIODevice::Append);
 	out.setVersion(QDataStream::Qt_5_0);
-	out << (quint32)data.size();   // 写入长度（4 字节，大端）
-	block.append(data);            // 追加消息体
+	out << (quint32)data.size();                // 写入长度（4 字节，大端）
+	block.append(data);                         // 追加消息体
 	tcpSocket->write(block);
 }
 
@@ -83,24 +85,32 @@ void TcpClient::readData() {
 // 解析缓冲区：根据长度前缀提取完整消息
 // ------------------------------------------------------------
 void TcpClient::processBuffer() {
+	const int HEADER_LEN = MAGIC_LEN + 4;  // 8: 魔数 + 长度字段
 	while (true) {
-		if (buffer.size() < 4) break; // 长度字段未完整
-		
-		// 读取长度（大端序）
-		quint32 len = qFromBigEndian<quint32>((const uchar*)buffer.constData());
-		
+		if (buffer.size() < HEADER_LEN) break; // 协议头未完整
+
+		// 校验魔数
+		if (buffer.left(MAGIC_LEN) != MAGIC) {
+			qCCritical(knotlinkTcp) << "Magic mismatch, disconnecting";
+			tcpSocket->disconnectFromHost();
+			return;
+		}
+
+		// 读取长度（大端序，在魔数之后）
+		quint32 len = qFromBigEndian<quint32>((const uchar*)buffer.constData() + MAGIC_LEN);
+
 		if (len == 0 || len > MAX_MSG_SIZE) {
 			qCCritical(knotlinkTcp) << "Invalid message length:" << len << ", disconnecting";
 			tcpSocket->disconnectFromHost();
 			return;
 		}
-		
-		if (buffer.size() < (int)(len + 4)) break; // 消息体未完整
-		
-		// 提取消息体（跳过长度字段）
-		QByteArray msg = buffer.mid(4, len);
-		buffer.remove(0, len + 4);
-		
+
+		if (buffer.size() < (int)(len + HEADER_LEN)) break; // 消息体未完整
+
+		// 提取消息体（跳过魔数 + 长度字段）
+		QByteArray msg = buffer.mid(HEADER_LEN, len);
+		buffer.remove(0, len + HEADER_LEN);
+
 		// 处理消息：忽略心跳响应，其他发出信号
 		if (msg == "heartbeat_response") {
 			qCDebug(knotlinkTcp) << "Heartbeat response received, ignoring";

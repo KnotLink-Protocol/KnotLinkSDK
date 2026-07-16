@@ -16,24 +16,27 @@
 class TcpClient : public QObject {
 	Q_OBJECT
 public:
+	static const QByteArray MAGIC;       // 协议魔数：KK + 版本号 2.0
+	static constexpr int MAGIC_LEN = 4;
+
 	explicit TcpClient(QObject *parent = nullptr);
 	~TcpClient();
-	
+
 	void connectToServer(const QString &ip, uint16_t port);
 	void sendData(const QByteArray &data);  // 自动添加长度前缀
-	
+
 	signals:
 	void connected();
 	void disconnected();
 	void receivedData(const QByteArray &data);  // 完整消息（不含长度前缀）
-	
+
 private slots:
 	void socketConnected();
 	void socketDisconnected();
 	void readData();
 	void handleError(QAbstractSocket::SocketError socketError);
 	void sendHeartbeat();
-	
+
 private:
 	QTcpSocket *tcpSocket;
 	QTimer *heartBeatTimer;
