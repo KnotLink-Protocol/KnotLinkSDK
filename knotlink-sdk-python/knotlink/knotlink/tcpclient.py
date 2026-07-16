@@ -12,6 +12,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 class TcpClient:
+    MAGIC = b'KK\x00\x02'  # 协议魔数：KK + 版本号 2.0
+
     def __init__(self) -> None:
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.heart_beat_interval = 180  # 3分钟
@@ -62,8 +64,8 @@ class TcpClient:
             length = len(data)
             if length > self.MAX_MSG_SIZE:
                 raise ValueError(f"消息过长: {length} > {self.MAX_MSG_SIZE}")
-            # 构造长度前缀（大端）
-            prefix = struct.pack('>I', length)  # >I 表示 unsigned int 大端
+            # 构造协议头：魔数 + 长度前缀（大端）
+            prefix = self.MAGIC + struct.pack('>I', length)
             self.tcp_socket.sendall(prefix + data)
         except socket.error as e:
             logger.error("Failed to send data: %s", e)
@@ -104,22 +106,30 @@ class TcpClient:
 
     def _process_buffer(self):
         """从缓冲区中提取完整消息并处理"""
+        MAGIC_LEN = len(self.MAGIC)  # 4
+        HEADER_LEN = MAGIC_LEN + 4   # 8: 魔数 + 长度字段
         while True:
             with self.lock:
-                if len(self.buffer) < 4:
-                    break  # 长度字段未完整
-                # 读取长度（大端）
-                length = struct.unpack('>I', self.buffer[:4])[0]
+                if len(self.buffer) < HEADER_LEN:
+                    break  # 协议头未完整
+                # 校验魔数
+                if self.buffer[:MAGIC_LEN] != self.MAGIC:
+                    logger.error("Magic mismatch: expected %s, got %s, disconnecting", self.MAGIC.hex(), self.buffer[:MAGIC_LEN].hex())
+                    self.connected = False
+                    self.tcp_socket.close()
+                    return
+                # 读取长度（大端，在魔数之后）
+                length = struct.unpack('>I', self.buffer[MAGIC_LEN:HEADER_LEN])[0]
                 if length == 0 or length > self.MAX_MSG_SIZE:
                     logger.error("Invalid message length: %d, disconnecting", length)
                     self.connected = False
                     self.tcp_socket.close()
                     return
-                if len(self.buffer) < 4 + length:
+                if len(self.buffer) < HEADER_LEN + length:
                     break  # 消息体未完整
                 # 提取消息体
-                msg = self.buffer[4:4+length]
-                self.buffer = self.buffer[4+length:]  # 移除已处理的数据
+                msg = self.buffer[HEADER_LEN:HEADER_LEN+length]
+                self.buffer = self.buffer[HEADER_LEN+length:]  # 移除已处理的数据
             # 处理消息（在锁外，避免阻塞）
             if msg == b"heartbeat_response":
                 logger.debug("Heartbeat response received, ignoring")
