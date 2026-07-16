@@ -103,6 +103,10 @@ public:
         uint32_t netLen = htonl(len);
 
         std::lock_guard<std::mutex> lock(sendMutex);
+        if (::send(tcpSocket, MAGIC, MAGIC_LEN, 0) == -1) {
+            handleError(SOCK_ERRNO);
+            return;
+        }
         if (::send(tcpSocket, (const char*)&netLen, sizeof(netLen), 0) == -1) {
             handleError(SOCK_ERRNO);
             return;
@@ -150,6 +154,8 @@ private:
     std::vector<char> recvBuffer;
     std::mutex recvMutex;
     static constexpr uint32_t MAX_MSG_SIZE = 16 * 1024 * 1024;
+    static constexpr char MAGIC[4] = {0x4B, 0x4B, 0x00, 0x02};  // KK + 版本号 2.0
+    static constexpr int MAGIC_LEN = 4;
 
     // ---- 日志输出 ----
     void log(LogLevel level, const std::string& msg) {
@@ -182,11 +188,20 @@ private:
     }
 
     void processBuffer() {
+        const int HEADER_LEN = MAGIC_LEN + 4;  // 8: 魔数 + 长度字段
         while (true) {
-            if (recvBuffer.size() < 4) break;
+            if (recvBuffer.size() < HEADER_LEN) break;
+
+            // 校验魔数
+            if (memcmp(recvBuffer.data(), MAGIC, MAGIC_LEN) != 0) {
+                log(LogLevel::Error, "Magic mismatch, disconnecting");
+                running = false;
+                sock_close(tcpSocket);
+                return;
+            }
 
             uint32_t netLen;
-            memcpy(&netLen, recvBuffer.data(), 4);
+            memcpy(&netLen, recvBuffer.data() + MAGIC_LEN, 4);
             uint32_t len = ntohl(netLen);
             if (len == 0 || len > MAX_MSG_SIZE) {
                 log(LogLevel::Error, "Invalid message length: " + std::to_string(len) + ", disconnecting");
@@ -194,10 +209,10 @@ private:
                 sock_close(tcpSocket);
                 return;
             }
-            if (recvBuffer.size() < 4 + len) break;
+            if (recvBuffer.size() < HEADER_LEN + len) break;
 
-            std::string msg(recvBuffer.data() + 4, len);
-            recvBuffer.erase(recvBuffer.begin(), recvBuffer.begin() + 4 + len);
+            std::string msg(recvBuffer.data() + HEADER_LEN, len);
+            recvBuffer.erase(recvBuffer.begin(), recvBuffer.begin() + HEADER_LEN + len);
 
             if (msg == heartbeatResponse) {
                 log(LogLevel::Debug, "Heartbeat response received");
