@@ -3,6 +3,7 @@ INCLUDEPATH += $$PWD/
 QT       += network
 
 SOURCES += \
+        $$PWD/kludf.cpp \
         $$PWD/opensocketquerier.cpp \
         $$PWD/opensocketresponser.cpp \
         $$PWD/signalsender.cpp \
@@ -10,6 +11,7 @@ SOURCES += \
         $$PWD/tcpclient.cpp
 
 HEADERS += \
+        $$PWD/kludf.h \
         $$PWD/opensocketquerier.h \
         $$PWD/opensocketresponser.h \
         $$PWD/signalsender.h \

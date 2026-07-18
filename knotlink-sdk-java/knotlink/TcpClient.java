@@ -26,6 +26,9 @@ public class TcpClient implements AutoCloseable {
     // 接收缓冲区
     private ByteBuffer buffer = ByteBuffer.allocate(0);
     private static final int MAX_MSG_SIZE = 16 * 1024 * 1024; // 16MB
+    private static final byte[] MAGIC = {0x4B, 0x4B, 0x00, 0x02}; // KK + 版本号 2.0
+    private static final int MAGIC_LEN = 4;
+    private static final int HEADER_LEN = MAGIC_LEN + 4; // 8: 魔数 + 长度字段
 
     public TcpClient() {
     }
@@ -54,10 +57,11 @@ public class TcpClient implements AutoCloseable {
         if (data.length > MAX_MSG_SIZE) {
             throw new IOException("Message too large: " + data.length);
         }
-        // 构造 4 字节大端长度前缀
-        ByteBuffer lengthBuf = ByteBuffer.allocate(4);
-        lengthBuf.putInt(data.length); // 默认大端
-        out.write(lengthBuf.array());
+        // 构造协议头：4 字节魔数 + 4 字节大端长度
+        ByteBuffer headerBuf = ByteBuffer.allocate(HEADER_LEN);
+        headerBuf.put(MAGIC);
+        headerBuf.putInt(data.length); // 默认大端
+        out.write(headerBuf.array());
         out.write(data);
         out.flush();
     }
@@ -148,23 +152,34 @@ public class TcpClient implements AutoCloseable {
     // ---------- 解析缓冲区 ----------
     private void processBuffer() {
         while (true) {
-            if (buffer.remaining() < 4) break; // 长度字段未完整
+            if (buffer.remaining() < HEADER_LEN) break; // 协议头未完整
+
+            // 用 duplicate 窥探协议头，不消费
+            ByteBuffer dup = buffer.duplicate();
+
+            // 校验魔数
+            byte[] magicChk = new byte[MAGIC_LEN];
+            dup.get(magicChk);
+            if (!Arrays.equals(magicChk, MAGIC)) {
+                System.err.println("Magic mismatch, disconnecting");
+                disconnect();
+                return;
+            }
 
             // 读取长度（大端）
-            int length = buffer.getInt(buffer.position());
+            int length = dup.getInt();
             if (length <= 0 || length > MAX_MSG_SIZE) {
                 System.err.println("Invalid message length: " + length + ", disconnecting");
                 disconnect();
                 return;
             }
-            if (buffer.remaining() < 4 + length) break; // 消息体未完整
+            if (dup.remaining() < length) break; // 消息体未完整
 
-            // 提取消息体
+            // 消费协议头 + 消息体
+            buffer.position(buffer.position() + HEADER_LEN);
             byte[] msgBytes = new byte[length];
-            buffer.position(buffer.position() + 4);
             buffer.get(msgBytes);
-            // 移除已处理的部分（包括长度前缀）
-            buffer = buffer.slice(); // 剩余部分
+            buffer = buffer.slice();
 
             // 处理消息：忽略心跳响应
             if (Arrays.equals(msgBytes, heartbeatResponseBytes)) {

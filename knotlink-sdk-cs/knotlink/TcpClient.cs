@@ -18,6 +18,9 @@ namespace KnotLink
         private const string HeartbeatMessage = "heartbeat";
         private const string HeartbeatResponse = "heartbeat_response";
         private const int MaxMessageSize = 16 * 1024 * 1024; // 16MB
+        private static readonly byte[] Magic = new byte[] { 0x4B, 0x4B, 0x00, 0x02 }; // KK + 版本号 2.0
+        private const int MagicLen = 4;
+        private const int HeaderLen = MagicLen + 4; // 8: 魔数 + 长度字段
 
         private readonly TimeSpan _heartbeatInterval;
         private TcpClient? _client;
@@ -27,6 +30,7 @@ namespace KnotLink
         private Task? _readTask;
         private Task? _heartbeatTask;
         private readonly byte[] _lenBuffer = new byte[4];
+        private readonly byte[] _magicBuffer = new byte[4];
         private readonly MemoryStream _recvBuffer = new();
         private int _disposed;
 
@@ -75,6 +79,7 @@ namespace KnotLink
                 if (Volatile.Read(ref _disposed) != 0)
                     throw new ObjectDisposedException(nameof(KlTcpClient));
 
+                await _stream.WriteAsync(Magic, 0, MagicLen, cancellationToken).ConfigureAwait(false);
                 await _stream.WriteAsync(lenBytes, 0, 4, cancellationToken).ConfigureAwait(false);
                 await _stream.WriteAsync(payload, 0, payload.Length, cancellationToken).ConfigureAwait(false);
                 await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -167,9 +172,19 @@ namespace KnotLink
             lock (_recvBuffer)
             {
                 long bufferLen = _recvBuffer.Length;
-                if (bufferLen < 4) return false;
+                if (bufferLen < HeaderLen) return false;
 
+                // 校验魔数
                 _recvBuffer.Position = 0;
+                _recvBuffer.Read(_magicBuffer, 0, MagicLen);
+                if (!_magicBuffer.AsSpan().SequenceEqual(Magic))
+                {
+                    _recvBuffer.SetLength(0);
+                    _recvBuffer.Position = 0;
+                    throw new InvalidDataException("Magic mismatch, disconnecting");
+                }
+
+                // 读取长度（大端）
                 _recvBuffer.Read(_lenBuffer, 0, 4);
                 int msgLen = BitConverter.ToInt32(_lenBuffer, 0);
                 if (BitConverter.IsLittleEndian) msgLen = System.Net.IPAddress.NetworkToHostOrder(msgLen);
@@ -182,18 +197,18 @@ namespace KnotLink
                     msgLenToThrow = msgLen;
                     // 退出 lock 块再抛异常
                 }
-                else if (bufferLen < 4 + msgLen)
+                else if (bufferLen < HeaderLen + msgLen)
                 {
                     return false; // 消息体未完整
                 }
                 else
                 {
                     byte[] msg = new byte[msgLen];
-                    _recvBuffer.Position = 4;
+                    _recvBuffer.Position = HeaderLen;
                     _recvBuffer.Read(msg, 0, msgLen);
 
-                    byte[] remaining = new byte[bufferLen - 4 - msgLen];
-                    _recvBuffer.Position = 4 + msgLen;
+                    byte[] remaining = new byte[bufferLen - HeaderLen - msgLen];
+                    _recvBuffer.Position = HeaderLen + msgLen;
                     _recvBuffer.Read(remaining, 0, remaining.Length);
                     _recvBuffer.SetLength(0);
                     _recvBuffer.Position = 0;
@@ -204,7 +219,9 @@ namespace KnotLink
                 }
             }
 
-            throw new InvalidDataException($"Invalid message length: {msgLenToThrow}");
+            if (shouldThrow)
+                throw new InvalidDataException($"Invalid message length: {msgLenToThrow}");
+            return false;
         }
 
         // ---------- 心跳循环 ----------
