@@ -7,6 +7,10 @@
 const net = require('net');
 
 class TcpClient {
+    static MAGIC = Buffer.from([0x4B, 0x4B, 0x00, 0x02]); // KK + 版本号 2.0
+    static MAGIC_LEN = 4;
+    static HEADER_LEN = 8; // 魔数 + 长度字段
+
     constructor() {
         this.tcpSocket = new net.Socket();
         this.heartBeatInterval = 180000; // 3分钟
@@ -54,11 +58,10 @@ class TcpClient {
         if (data.length > this.MAX_MSG_SIZE) {
             throw new Error(`消息过长: ${data.length} > ${this.MAX_MSG_SIZE}`);
         }
-        // 构造 4 字节大端长度前缀
+        // 构造协议头：4 字节魔数 + 4 字节大端长度前缀
         const lengthBuf = Buffer.alloc(4);
         lengthBuf.writeUInt32BE(data.length, 0);
-        // 发送前缀 + 数据
-        this.tcpSocket.write(Buffer.concat([lengthBuf, data]));
+        this.tcpSocket.write(Buffer.concat([TcpClient.MAGIC, lengthBuf, data]));
     }
 
     send_data(data) {
@@ -89,22 +92,30 @@ class TcpClient {
 
     // ---------- 接收缓冲解析 ----------
     _processBuffer() {
+        const HEADER_LEN = TcpClient.HEADER_LEN;
+        const MAGIC_LEN = TcpClient.MAGIC_LEN;
         while (true) {
-            if (this.buffer.length < 4) break; // 长度字段未完整
+            if (this.buffer.length < HEADER_LEN) break; // 协议头未完整
 
-            // 读取长度（大端）
-            const length = this.buffer.readUInt32BE(0);
+            // 校验魔数
+            if (Buffer.compare(this.buffer.slice(0, MAGIC_LEN), TcpClient.MAGIC) !== 0) {
+                console.log("魔数不匹配，断开连接");
+                this.disconnect();
+                return;
+            }
+
+            // 读取长度（大端，在魔数之后）
+            const length = this.buffer.readUInt32BE(MAGIC_LEN);
             if (length === 0 || length > this.MAX_MSG_SIZE) {
                 console.log(`无效消息长度: ${length}，断开连接`);
                 this.disconnect();
                 return;
             }
-            if (this.buffer.length < 4 + length) break; // 消息体未完整
+            if (this.buffer.length < HEADER_LEN + length) break; // 消息体未完整
 
-            // 提取消息体
-            const msg = this.buffer.slice(4, 4 + length);
-            // 移除已处理的部分
-            this.buffer = this.buffer.slice(4 + length);
+            // 提取消息体（跳过魔数 + 长度）
+            const msg = this.buffer.slice(HEADER_LEN, HEADER_LEN + length);
+            this.buffer = this.buffer.slice(HEADER_LEN + length);
 
             // 处理消息：忽略心跳响应，其他触发回调
             if (msg.toString() === "heartbeat_response") {
