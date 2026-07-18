@@ -11,6 +11,8 @@ class TcpClient(QObject):
     disconnected = pyqtSignal()
     receivedData = pyqtSignal(bytes)  # 发出完整消息（不含长度前缀）
 
+    MAGIC = b'KK\x00\x02'  # 协议魔数：KK + 版本号 2.0
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.tcpSocket = QTcpSocket(self)
@@ -49,10 +51,10 @@ class TcpClient(QObject):
         if len(data) > self.MAX_MSG_SIZE:
             print(f"消息过长: {len(data)} > {self.MAX_MSG_SIZE}")
             return False
-        # 构造 4 字节大端长度前缀
+        # 构造 4 字节大端长度前缀 + 魔数前缀
         length_bytes = struct.pack('>I', len(data))
-        # 发送前缀 + 数据
-        self.tcpSocket.write(length_bytes + data)
+        # 发送魔数 + 长度 + 数据
+        self.tcpSocket.write(self.MAGIC + length_bytes + data)
         return True
 
     def sendData(self, data: bytes):
@@ -78,24 +80,31 @@ class TcpClient(QObject):
 
     def _processBuffer(self):
         """从缓冲区解析完整消息"""
+        MAGIC_LEN = len(self.MAGIC)  # 4
+        HEADER_LEN = MAGIC_LEN + 4   # 8
         while True:
-            if len(self.buffer) < 4:
-                break  # 长度字段未完整
+            if len(self.buffer) < HEADER_LEN:
+                break  # 协议头未完整
 
-            # 读取长度（大端）
-            length = struct.unpack('>I', self.buffer[:4])[0]
+            # 校验魔数
+            if self.buffer[:MAGIC_LEN] != self.MAGIC:
+                print(f"魔数不匹配: expected {self.MAGIC.hex()}, got {bytes(self.buffer[:MAGIC_LEN]).hex()}，断开连接")
+                self.tcpSocket.disconnectFromHost()
+                return
+
+            # 读取长度（大端，在魔数之后）
+            length = struct.unpack('>I', self.buffer[MAGIC_LEN:HEADER_LEN])[0]
             if length == 0 or length > self.MAX_MSG_SIZE:
                 print(f"无效消息长度: {length}，断开连接")
                 self.tcpSocket.disconnectFromHost()
                 return
 
-            if len(self.buffer) < 4 + length:
+            if len(self.buffer) < HEADER_LEN + length:
                 break  # 消息体未完整
 
-            # 提取消息体
-            msg = bytes(self.buffer[4:4+length])
-            # 移除已处理的数据
-            del self.buffer[:4+length]
+            # 提取消息体（跳过魔数 + 长度）
+            msg = bytes(self.buffer[HEADER_LEN:HEADER_LEN+length])
+            del self.buffer[:HEADER_LEN+length]
 
             # 处理消息：忽略心跳响应
             if msg == b"heartbeat_response":
